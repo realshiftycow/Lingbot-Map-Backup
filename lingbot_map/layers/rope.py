@@ -362,6 +362,9 @@ class WanRotaryPosEmbed(nn.Module):
         """
 
         # 步骤1：将预计算的频率移到目标设备，并分割成三个维度
+        target_device = torch.device(device) if isinstance(device, str) else device
+        if target_device.type == "mps" and self.freqs.dtype == torch.complex128:
+            self.freqs = self.freqs.to(torch.complex64)
         self.freqs = self.freqs.to(device)
         # 获取实际的维度分配
         if hasattr(self, 'fhw_dim') and self.fhw_dim is not None:

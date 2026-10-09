@@ -14,6 +14,7 @@ import torch.nn as nn
 from typing import Optional, Tuple, List
 
 from lingbot_map.layers.block import Block, FlashInferBlock, SDPABlock
+from lingbot_map.layers.attention import FLASHINFER_AVAILABLE
 from lingbot_map.layers.rope import WanRotaryPosEmbed
 from lingbot_map.aggregator.base import AggregatorBase, slice_expand_and_flatten
 
@@ -89,8 +90,10 @@ class AggregatorStream(AggregatorBase):
         use_sdpa = kwargs.pop('use_sdpa', False)
 
         # Backend selection: SDPA (no extra deps) or FlashInfer (paged KV cache)
+        if not FLASHINFER_AVAILABLE:
+            use_sdpa = True
         self.use_sdpa = use_sdpa
-        self.use_flashinfer = not use_sdpa  # FlashInfer is default unless SDPA requested
+        self.use_flashinfer = not use_sdpa and FLASHINFER_AVAILABLE
 
         # Call parent __init__
         super().__init__(**kwargs)

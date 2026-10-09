@@ -196,6 +196,9 @@ class GCTStream(GCTBase):
         self.kv_cache_cross_frame_special = kv_cache_cross_frame_special
         self.kv_cache_include_scale_frames = kv_cache_include_scale_frames
         self.kv_cache_camera_only = kv_cache_camera_only
+        from lingbot_map.layers.attention import FLASHINFER_AVAILABLE
+        if not FLASHINFER_AVAILABLE:
+            use_sdpa = True
         self.use_sdpa = use_sdpa
         self.camera_num_iterations = camera_num_iterations
 
