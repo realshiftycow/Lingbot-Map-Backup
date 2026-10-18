@@ -117,7 +117,7 @@ class CameraHead(nn.Module):
         for _ in range(num_iterations):
             # Use a learned empty pose for the first iteration.
             if pred_pose_enc is None:
-                module_input = self.embed_pose(self.empty_pose_tokens.expand(B, S, -1))
+                module_input = self.embed_pose(self.empty_pose_tokens.expand(B, S, -1).contiguous())
             else:
                 # Detach the previous prediction to avoid backprop through time.
                 pred_pose_enc = pred_pose_enc.detach()
@@ -347,7 +347,7 @@ class CameraCausalHead(nn.Module):
         for i in range(num_iterations):
             # Use a learned empty pose for the first iteration.
             if pred_pose_enc is None:
-                module_input = self.embed_pose(self.empty_pose_tokens.expand(B, S, -1))
+                module_input = self.embed_pose(self.empty_pose_tokens.expand(B, S, -1).contiguous())
             else:
                 # Detach the previous prediction to avoid backprop through time.
                 pred_pose_enc = pred_pose_enc.detach()

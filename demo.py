@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import glob
 import os
 import sys
@@ -136,6 +137,17 @@ def load_model(args, device):
         from lingbot_map.models.gct_stream import GCTStream
 
     print("Building model...")
+    use_sdpa = args.use_sdpa
+    if not torch.cuda.is_available():
+        use_sdpa = True
+    else:
+        try:
+            from lingbot_map.layers.attention import FLASHINFER_AVAILABLE
+            if not FLASHINFER_AVAILABLE:
+                use_sdpa = True
+        except ImportError:
+            use_sdpa = True
+
     model = GCTStream(
         img_size=args.image_size,
         patch_size=args.patch_size,
@@ -145,7 +157,7 @@ def load_model(args, device):
         kv_cache_scale_frames=args.num_scale_frames,
         kv_cache_cross_frame_special=True,
         kv_cache_include_scale_frames=True,
-        use_sdpa=args.use_sdpa,
+        use_sdpa=use_sdpa,
         camera_num_iterations=args.camera_num_iterations,
     )
 
@@ -186,6 +198,14 @@ def compile_model(model):
         b.attn.proj = torch.compile(b.attn.proj, mode="reduce-overhead")
 
 
+def get_autocast_context(device, dtype):
+    if device.type == "cuda":
+        return torch.amp.autocast("cuda", dtype=dtype)
+    elif device.type == "mps" and dtype != torch.float32:
+        return torch.amp.autocast("mps", dtype=dtype)
+    return contextlib.nullcontext()
+
+
 def _warm_streaming(model, images, scale_frames, warm_stream_n, dtype,
                     passes=1, keyframe_interval=1):
     """Drive `clean_kv_cache → Phase 1 → N streaming forwards` `passes` times.
@@ -218,8 +238,9 @@ def _warm_streaming(model, images, scale_frames, warm_stream_n, dtype,
 
     for _ in range(passes):
         model.clean_kv_cache()
-        torch.compiler.cudagraph_mark_step_begin()
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
+        if torch.cuda.is_available():
+            torch.compiler.cudagraph_mark_step_begin()
+        with torch.no_grad(), get_autocast_context(images.device, dtype):
             model.forward(
                 warm_scale,
                 num_frame_for_scale=scale_frames,
@@ -230,8 +251,9 @@ def _warm_streaming(model, images, scale_frames, warm_stream_n, dtype,
             is_keyframe = (kf_int <= 1) or (i % kf_int == 0)
             if not is_keyframe:
                 model._set_skip_append(True)
-            torch.compiler.cudagraph_mark_step_begin()
-            with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
+            if torch.cuda.is_available():
+                torch.compiler.cudagraph_mark_step_begin()
+            with torch.no_grad(), get_autocast_context(images.device, dtype):
                 model.forward(
                     warm_stream[:, i:i + 1],
                     num_frame_for_scale=scale_frames,
@@ -292,14 +314,17 @@ def postprocess(predictions, images):
     predictions.pop("images", None)
 
     print("Moving results to CPU...")
+    non_blocking = torch.cuda.is_available()
     for k in list(predictions.keys()):
         if isinstance(predictions[k], torch.Tensor):
             predictions[k] = _squeeze_single_batch(
-                k, predictions[k].to("cpu", non_blocking=True)
+                k, predictions[k].to("cpu", non_blocking=non_blocking)
             )
-    images_cpu = images.to("cpu", non_blocking=True)
+    images_cpu = images.to("cpu", non_blocking=non_blocking)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+    elif torch.backends.mps.is_available():
+        torch.mps.synchronize()
 
     return predictions, images_cpu
 
@@ -424,7 +449,12 @@ def main():
     assert args.image_folder or args.video_path, \
         "Provide --image_folder or --video_path"
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     # ── Load images & model ──────────────────────────────────────────────────
     t0 = time.time()
@@ -548,7 +578,7 @@ def main():
 
     output_device = torch.device("cpu") if args.offload_to_cpu else None
 
-    with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype):
+    with torch.no_grad(), get_autocast_context(device, dtype):
         if args.mode == "streaming":
             predictions = model.inference_streaming(
                 images,
